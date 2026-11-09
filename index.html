@@ -1,281 +1,751 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" class="h-full bg-slate-900 text-slate-100">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IdeaForge Studio & Slide Presenter</title>
-  <!-- Google API / Identity Services -->
-  <script src="https://apis.google.com/js/api.js" async defer></script>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-  
-  <!-- Quill.js (Rich Text Editor) -->
-  <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
-  <script src="https://cdn.quilljs.com/1.3.6/quill.min.js"></script>
-  
-  <style>
-    :root {
-      --bg-color: #0f172a;
-      --card-bg: #1e293b;
-      --accent: #3b82f6;
-      --text: #f8fafc;
-      --border: #334155;
-    }
-    body {
-      margin: 0; padding: 0;
-      background: var(--bg-color); color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
-    .header-bar {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 10px 20px; background: #020617; border-bottom: 1px solid var(--border);
-    }
-    .btn {
-      background: var(--accent); color: #fff; border: none;
-      padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600;
-    }
-    .btn-drive { background: #10b981; }
-    .status-text { font-size: 12px; color: #94a3b8; margin-left: 10px; }
-
-    /* Tabs & Content UI */
-    .tab-bar { display: flex; gap: 4px; background: #0f172a; padding: 8px 16px 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
-    .tab { padding: 8px 16px; background: #1e293b; color: #94a3b8; border-radius: 6px 6px 0 0; cursor: pointer; border: 1px solid var(--border); border-bottom: none; }
-    .tab.active { background: #3b82f6; color: #fff; font-weight: bold; }
-    .container { padding: 20px; max-width: 1200px; margin: 0 auto; }
-    .editor-card { background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); padding: 16px; margin-top: 15px; }
-    .ql-toolbar { background: #f8fafc; border-radius: 4px 4px 0 0; }
-    .ql-container { background: #fff; color: #000; border-radius: 0 0 4px 4px; height: 300px; font-size: 16px; }
-    
-    /* Fullscreen Slide Modal */
-    .slide-modal { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-content: 1000; flex-direction: column; justify-content: center; align-items: center; padding: 40px; box-sizing: border-box; }
-    .slide-modal.active { display: flex; }
-    .slide-content { color: #fff; font-size: 32px; text-align: center; max-width: 90%; }
-    .close-slide { position: absolute; top: 20px; right: 20px; background: #ef4444; }
-  </style>
-</head>
-<body>
-
-<div class="header-bar">
-  <h2 style="margin:0; font-size:18px;">IdeaForge Studio</h2>
-  <div>
-    <button id="slide-btn" class="btn" style="background:#8b5cf6;" onclick="openSlide()">スライド表示</button>
-    <button id="drive-auth-btn" class="btn btn-drive" onclick="handleAuthClick()">Googleドライブと同期</button>
-    <span id="sync-status" class="status-text">未同期（ローカル保存中）</span>
-  </div>
-</div>
-
-<div class="tab-bar" id="tab-container"></div>
-
-<div class="container">
-  <div style="display:flex; gap:10px; margin-bottom:10px;">
-    <button class="btn" onclick="addTab()">+ タブ追加</button>
-    <button class="btn" style="background:#ef4444;" onclick="deleteCurrentTab()">タブ削除</button>
-  </div>
-  <div class="editor-card">
-    <input type="text" id="tab-title-input" style="width:100%; font-size:18px; padding:8px; margin-bottom:10px; box-sizing:border-box; background:#0f172a; color:#fff; border:1px solid var(--border); border-radius:4px;" placeholder="テーマ名（例: フォートナイト）" oninput="updateTabTitle()">
-    <div id="editor"></div>
-  </div>
-</div>
-
-<!-- スライド全画面モーダル -->
-<div id="slide-modal" class="slide-modal">
-  <button class="btn close-slide" onclick="closeSlide()">閉じる (ESC)</button>
-  <div id="slide-content" class="slide-content"></div>
-</div>
-
-<script>
-  // Google API 設定
-  const CLIENT_ID = '919932654673-nklmiotkki9p0r7dmcucm5391n9n9diq.apps.googleusercontent.com';
-  const API_KEY = 'AIzaSyCkghiYEREKW5V7CeY21QFb4cLrdHcGuO4'; // ここにご自身のAPIキーを入れてください
-  const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
-  const SCOPES = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
-
-  let tokenClient;
-  let driveFileId = null;
-
-  // アプリデータ構造
-  let appData = JSON.parse(localStorage.getItem('ideaforge_app_data')) || {
-    activeIndex: 0,
-    tabs: [
-      { title: 'フォートナイト', content: '<h2>要点メモ</h2><ul><li>ネタ1...</li></ul>' },
-      { title: 'うつ病Vlog', content: '<h2>話すテーマ</h2><ul><li>今日の振り返り...</li></ul>' }
-    ]
-  };
-
-  let quill;
-
-  document.addEventListener('DOMContentLoaded', () => {
-    quill = new Quill('#editor', {
-      theme: 'snow',
-      modules: {
-        toolbar: [
-          [{ 'header': [1, 2, 3, false] }],
-          ['bold', 'italic', 'underline', 'strike'],
-          [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-          [{ 'color': [] }, { 'background': [] }],
-          ['clean']
-        ]
-      }
-    });
-
-    quill.on('text-change', () => {
-      appData.tabs[appData.activeIndex].content = quill.root.innerHTML;
-      saveLocalAndSync();
-    });
-
-    renderTabs();
-    loadActiveTab();
-  });
-
-  function renderTabs() {
-    const container = document.getElementById('tab-container');
-    container.innerHTML = '';
-    appData.tabs.forEach((tab, index) => {
-      const div = document.createElement('div');
-      div.className = `tab ${index === appData.activeIndex ? 'active' : ''}`;
-      div.innerText = tab.title || `タブ ${index + 1}`;
-      div.onclick = () => switchTab(index);
-      container.appendChild(div);
-    });
-  }
-
-  function loadActiveTab() {
-    const current = appData.tabs[appData.activeIndex];
-    document.getElementById('tab-title-input').value = current.title;
-    quill.root.innerHTML = current.content || '';
-  }
-
-  function switchTab(index) {
-    appData.activeIndex = index;
-    renderTabs();
-    loadActiveTab();
-    saveLocalAndSync();
-  }
-
-  function addTab() {
-    appData.tabs.push({ title: '新規テーマ', content: '' });
-    appData.activeIndex = appData.tabs.length - 1;
-    renderTabs();
-    loadActiveTab();
-    saveLocalAndSync();
-  }
-
-  function deleteCurrentTab() {
-    if (appData.tabs.length <= 1) return alert('最後の1つのタブは削除できません。');
-    if (!confirm('現在のタブを削除しますか？')) return;
-    appData.tabs.splice(appData.activeIndex, 1);
-    appData.activeIndex = Math.max(0, appData.activeIndex - 1);
-    renderTabs();
-    loadActiveTab();
-    saveLocalAndSync();
-  }
-
-  function updateTabTitle() {
-    const title = document.getElementById('tab-title-input').value;
-    appData.tabs[appData.activeIndex].title = title;
-    renderTabs();
-    saveLocalAndSync();
-  }
-
-  function saveLocalAndSync() {
-    localStorage.setItem('ideaforge_app_data', JSON.stringify(appData));
-    if (driveFileId) {
-      syncToDrive();
-    }
-  }
-
-  // スライド機能
-  function openSlide() {
-    const modal = document.getElementById('slide-modal');
-    const content = document.getElementById('slide-content');
-    content.innerHTML = quill.root.innerHTML;
-    modal.classList.add('active');
-  }
-  function closeSlide() {
-    document.getElementById('slide-modal').classList.remove('active');
-  }
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeSlide();
-  });
-
-  // Google Drive API 連携
-  function gapiLoaded() {
-    gapi.load('client', async () => {
-      await gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
-    });
-  }
-
-  function gisLoaded() {
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-      callback: '',
-    });
-  }
-
-  window.onload = () => { gapiLoaded(); gisLoaded(); };
-
-  function handleAuthClick() {
-    tokenClient.callback = async (resp) => {
-      if (resp.error !== undefined) throw resp;
-      document.getElementById('drive-auth-btn').innerText = '同期中...';
-      document.getElementById('sync-status').innerText = 'クラウド接続完了';
-      await loadDataFromDrive();
-    };
-    if (gapi.client.getToken() === null) {
-      tokenClient.requestAccessToken({prompt: 'consent'});
-    } else {
-      tokenClient.requestAccessToken({prompt: ''});
-    }
-  }
-
-  async function loadDataFromDrive() {
-    try {
-      const response = await gapi.client.drive.files.list({
-        q: "name = 'ideaforge_data.json' and trashed = false",
-        fields: 'files(id, name)',
-      });
-      const files = response.result.files;
-      if (files && files.length > 0) {
-        driveFileId = files[0].id;
-        const fileContent = await gapi.client.drive.files.get({ fileId: driveFileId, alt: 'media' });
-        if (fileContent.result) {
-          appData = fileContent.result;
-          localStorage.setItem('ideaforge_app_data', JSON.stringify(appData));
-          renderTabs();
-          loadActiveTab();
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IdeaForge Studio & Slide Presenter</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google API & GIS -->
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                        }
+                    }
+                }
+            }
         }
-      } else {
-        await saveNewFileToDrive();
-      }
-      document.getElementById('drive-auth-btn').innerText = 'Drive同期中';
-      document.getElementById('sync-status').innerText = '自動同期有効（Drive）';
-    } catch (err) {
-      console.error('Drive読み込みエラー:', err);
-    }
-  }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        
+        #richEditor[contenteditable=true]:empty:before {
+            content: attr(placeholder);
+            color: #64748b;
+            pointer-events: none;
+            display: block;
+        }
+        #richEditor h1 { font-size: 1.75rem; font-weight: 800; margin-top: 1rem; margin-bottom: 0.5rem; color: #f8fafc; }
+        #richEditor h2 { font-size: 1.35rem; font-weight: 700; margin-top: 0.85rem; margin-bottom: 0.4rem; color: #38bdf8; }
+        #richEditor h3 { font-size: 1.1rem; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.3rem; color: #cbd5e1; }
+        #richEditor p { margin-bottom: 0.5rem; line-height: 1.6; }
+        #richEditor ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 0.5rem; }
+        #richEditor ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 0.5rem; }
+        #richEditor hr { border: 0; height: 2px; background: #38bdf8; margin: 1.5rem 0; opacity: 0.6; border-radius: 2px; }
+        #richEditor blockquote { border-left: 3px solid #0ea5e9; padding-left: 0.75rem; color: #94a3b8; font-style: italic; margin: 0.5rem 0; }
 
-  async function saveNewFileToDrive() {
-    const fileMetadata = { name: 'ideaforge_data.json', mimeType: 'application/json' };
-    const response = await gapi.client.drive.files.create({ resource: fileMetadata, fields: 'id' });
-    driveFileId = response.result.id;
-    await syncToDrive();
-  }
+        .slide-page h1 { font-size: 2.75rem; font-weight: 900; color: #ffffff; text-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+        .slide-page h2 { font-size: 2.2rem; font-weight: 800; color: #38bdf8; }
+        .slide-page h3 { font-size: 1.6rem; font-weight: 700; color: #e2e8f0; }
+        .slide-page p { font-size: 1.35rem; line-height: 1.8; color: #cbd5e1; }
+        .slide-page ul { list-style-type: disc; padding-left: 2rem; font-size: 1.4rem; line-height: 2; color: #f1f5f9; }
+        .slide-page ol { list-style-type: decimal; padding-left: 2rem; font-size: 1.4rem; line-height: 2; color: #f1f5f9; }
+        .slide-page li { margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body class="h-full flex flex-col font-sans antialiased selection:bg-sky-500 selection:text-white overflow-hidden">
 
-  async function syncToDrive() {
-    if (!driveFileId) return;
-    try {
-      await gapi.client.request({
-        path: `/upload/drive/v3/files/${driveFileId}`,
-        method: 'PATCH',
-        params: { uploadType: 'media' },
-        body: JSON.stringify(appData)
-      });
-      document.getElementById('sync-status').innerText = '保存完了 (' + new Date().toLocaleTimeString() + ')';
-    } catch (err) {
-      console.error('Drive同期エラー:', err);
-    }
-  }
-</script>
+    <!-- Top Navigation Header -->
+    <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-30 px-4 py-2.5 sm:px-6">
+        <div class="max-w-7xl mx-auto flex items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-2 bg-sky-500/10 text-sky-400 rounded-xl border border-sky-500/20">
+                    <i data-lucide="presentation" class="w-5 h-5"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-base leading-tight tracking-wide text-white flex items-center gap-2">
+                        IdeaForge Studio
+                        <span class="text-[10px] bg-sky-500/20 text-sky-400 border border-sky-500/30 px-2 py-0.5 rounded-full font-semibold">スライド連携ノート</span>
+                    </h1>
+                </div>
+            </div>
 
+            <!-- Actions Header -->
+            <div class="flex items-center gap-2">
+                <!-- Google Drive Sync Button -->
+                <button id="driveAuthBtn" onclick="handleAuthClick()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center gap-1.5 border border-emerald-500 shadow-md">
+                    <i data-lucide="cloud" class="w-3.5 h-3.5"></i>
+                    <span id="driveBtnText">Drive同期</span>
+                </button>
+
+                <button onclick="exportData()" title="JSONエクスポート" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition flex items-center gap-1.5 border border-slate-700">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                    <span class="hidden sm:inline">バックアップ</span>
+                </button>
+                <label title="JSONインポート" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition flex items-center gap-1.5 border border-slate-700 cursor-pointer">
+                    <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                    <span class="hidden sm:inline">復元</span>
+                    <input type="file" id="importFileInput" accept=".json" class="hidden" onchange="importData(event)">
+                </label>
+                <button onclick="createNewNote()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-500 hover:bg-sky-400 text-white transition flex items-center gap-1.5 shadow-lg shadow-sky-500/20">
+                    <i data-lucide="plus" class="w-4 h-4"></i>
+                    <span>新規ノート</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Spreadsheet Style Tabs Bar -->
+    <div class="bg-slate-950 border-b border-slate-800 px-4 sm:px-6 flex items-center justify-between gap-1 overflow-x-auto select-none">
+        <div class="flex items-center gap-1 py-1.5 overflow-x-auto">
+            <div id="tabsContainer" class="flex items-center gap-1"></div>
+            <button onclick="openAddTabModal()" title="新しいジャンルタブを追加" class="p-1.5 text-slate-400 hover:text-sky-400 hover:bg-slate-800 rounded-lg transition ml-1">
+                <i data-lucide="plus" class="w-4 h-4"></i>
+            </button>
+        </div>
+        <div id="syncStatusText" class="text-[11px] text-slate-400 whitespace-nowrap pl-2 hidden sm:block">
+            ローカル保存中
+        </div>
+    </div>
+
+    <!-- Main Workspace Layout -->
+    <div class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden">
+
+        <!-- Sidebar / Note List (4 Columns) -->
+        <section class="lg:col-span-4 flex flex-col gap-3 h-full overflow-hidden">
+            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-2">
+                <div class="relative">
+                    <i data-lucide="search" class="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                    <input type="text" id="searchInput" placeholder="ノートを検索..." oninput="renderNoteList()" 
+                           class="w-full pl-8 pr-3 py-1.5 bg-slate-900 border border-slate-700/70 rounded-lg text-xs placeholder-slate-500 text-slate-100 focus:outline-none focus:border-sky-500 transition">
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                    <span class="text-slate-400 text-[11px]">ステータス:</span>
+                    <select id="statusFilter" onchange="renderNoteList()" class="bg-slate-900 border border-slate-700/60 rounded-md px-2 py-0.5 text-slate-200 text-[11px] focus:outline-none focus:border-sky-500">
+                        <option value="ALL">すべて表示</option>
+                        <option value="IDEA">💡 アイディア</option>
+                        <option value="OUTLINING">📝 構成作成中</option>
+                        <option value="RECORDED">🎬 撮影完了</option>
+                        <option value="PUBLISHED">✅ 公開済み</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="noteList" class="flex-1 overflow-y-auto space-y-2 pr-1"></div>
+        </section>
+
+        <!-- Editor & Slide Preview (8 Columns) -->
+        <section class="lg:col-span-8 flex flex-col h-full overflow-hidden">
+            <div id="editorContainer" class="bg-slate-950/80 border border-slate-800 rounded-2xl flex-1 flex flex-col overflow-hidden relative shadow-xl">
+                
+                <div id="emptyState" class="flex flex-col items-center justify-center h-full text-center p-8 text-slate-500 space-y-3">
+                    <div class="p-4 bg-slate-900 rounded-2xl border border-slate-800">
+                        <i data-lucide="file-text" class="w-10 h-10 text-slate-600"></i>
+                    </div>
+                    <div>
+                        <p class="font-medium text-slate-300">ノートが選択されていません</p>
+                        <p class="text-xs text-slate-500 mt-1">左側のリストから選択するか、新規ノートを作成してください。</p>
+                    </div>
+                </div>
+
+                <div id="activeEditor" class="hidden flex-col h-full overflow-hidden">
+                    <div class="p-4 border-b border-slate-800 bg-slate-900/40 space-y-3">
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="flex-1 space-y-2">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span id="noteCategoryBadge" class="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/30"></span>
+                                    <select id="detailStatusSelect" onchange="updateCurrentStatus(this.value)" class="bg-slate-800 border border-slate-700 rounded-md text-[11px] font-medium px-2 py-0.5 text-slate-200 focus:outline-none">
+                                        <option value="IDEA">💡 アイディア</option>
+                                        <option value="OUTLINING">📝 構成作成中</option>
+                                        <option value="RECORDED">🎬 撮影完了</option>
+                                        <option value="PUBLISHED">✅ 公開済み</option>
+                                    </select>
+                                </div>
+                                <input type="text" id="detailTitleInput" onchange="updateCurrentTitle(this.value)" placeholder="動画タイトル / テーマ..." 
+                                       class="w-full bg-transparent font-bold text-xl text-white placeholder-slate-600 border-b border-transparent hover:border-slate-700 focus:border-sky-500 focus:outline-none py-0.5 transition">
+                            </div>
+
+                            <div class="flex items-center gap-1.5">
+                                <button onclick="startPresentation()" title="全画面スライドショー開始" class="px-3 py-1.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-semibold text-xs rounded-xl shadow-lg shadow-sky-500/20 flex items-center gap-1.5 transition">
+                                    <i data-lucide="play" class="w-3.5 h-3.5 fill-current"></i>
+                                    <span>スライド再生</span>
+                                </button>
+                                <button onclick="deleteCurrentNote()" title="削除" class="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="px-4 py-2 border-b border-slate-800/80 bg-slate-900/80 flex items-center gap-1 overflow-x-auto">
+                        <select onchange="formatDoc('formatBlock', this.value); this.selectedIndex=0;" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none">
+                            <option value="">文字サイズ</option>
+                            <option value="H1">見出し 1 (大)</option>
+                            <option value="H2">見出し 2 (中)</option>
+                            <option value="H3">見出し 3 (小)</option>
+                            <option value="P">標準テキスト</option>
+                        </select>
+                        <div class="h-4 w-px bg-slate-700 mx-1"></div>
+                        <button onclick="formatDoc('bold')" title="太字" class="p-1.5 text-slate-300 hover:bg-slate-800 rounded">
+                            <i data-lucide="bold" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="formatDoc('italic')" title="斜体" class="p-1.5 text-slate-300 hover:bg-slate-800 rounded">
+                            <i data-lucide="italic" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="formatDoc('underline')" title="下線" class="p-1.5 text-slate-300 hover:bg-slate-800 rounded">
+                            <i data-lucide="underline" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <div class="h-4 w-px bg-slate-700 mx-1"></div>
+                        <button onclick="formatDoc('insertUnorderedList')" title="箇条書き" class="p-1.5 text-slate-300 hover:bg-slate-800 rounded">
+                            <i data-lucide="list" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="formatDoc('insertOrderedList')" title="番号リスト" class="p-1.5 text-slate-300 hover:bg-slate-800 rounded">
+                            <i data-lucide="list-ordered" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <div class="h-4 w-px bg-slate-700 mx-1"></div>
+                        <button onclick="insertSlideSeparator()" title="スライド区切り(---)を挿入" class="px-2 py-1 text-xs font-medium text-sky-400 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 rounded flex items-center gap-1">
+                            <i data-lucide="minus" class="w-3 h-3"></i>
+                            <span>スライド区切り</span>
+                        </button>
+                    </div>
+
+                    <div class="flex-1 p-5 overflow-y-auto bg-slate-950/30">
+                        <div id="richEditor" contenteditable="true" oninput="saveCurrentNoteContent()" placeholder="ここに台本、メモ、箇条書きを入力してください...&#10;「スライド区切り」を押すか『---』を挟むとプレゼン時にページが分割されます。" 
+                             class="min-h-full outline-none text-slate-100 text-sm leading-relaxed">
+                        </div>
+                    </div>
+
+                    <div class="p-2.5 border-t border-slate-800 bg-slate-900/60 flex items-center justify-between text-[11px] text-slate-400 px-4">
+                        <span class="flex items-center gap-1.5">
+                            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-sky-400"></i>
+                            「スライド区切り」または「見出し(H1/H2)」を入れると自動でパワポ用スライドに分割されます
+                        </span>
+                        <span id="slideCountBadge" class="text-sky-400 font-medium">全 1 スライド</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Modal: Add New Tab -->
+    <div id="addTabModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-slate-100 text-sm flex items-center gap-2">
+                    <i data-lucide="folder-plus" class="w-4 h-4 text-sky-400"></i>
+                    新しいジャンルタブの追加
+                </h3>
+                <button onclick="closeAddTabModal()" class="text-slate-400 hover:text-slate-200">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">ジャンル名</label>
+                <input type="text" id="newTabNameInput" placeholder="例: 鹿島アントラーズ, プログラミング" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-sky-500">
+            </div>
+            <div class="flex justify-end gap-2 pt-2">
+                <button onclick="closeAddTabModal()" class="px-3.5 py-1.5 text-xs text-slate-400 hover:bg-slate-800 rounded-lg">キャンセル</button>
+                <button onclick="addNewTab()" class="px-3.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold text-xs rounded-lg shadow-md shadow-sky-500/20">追加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen Presentation Modal -->
+    <div id="presentationModal" class="fixed inset-0 bg-slate-950 z-50 flex flex-col hidden select-none">
+        <div class="p-4 bg-slate-900/80 border-b border-slate-800 flex items-center justify-between opacity-30 hover:opacity-100 transition duration-300">
+            <div class="flex items-center gap-3">
+                <span id="presTabName" class="px-2.5 py-1 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30 font-bold text-xs"></span>
+                <h2 id="presTitle" class="text-base font-bold text-white"></h2>
+            </div>
+            <div class="flex items-center gap-4">
+                <span id="presPageIndicator" class="text-xs font-mono text-slate-400">1 / 1</span>
+                <button onclick="closePresentation()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center gap-1.5">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                    <span>終了 (ESC)</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="flex-1 flex items-center justify-center p-8 sm:p-16 overflow-hidden cursor-pointer" onclick="nextSlide()">
+            <div id="slideContent" class="slide-page max-w-4xl w-full bg-slate-900/90 border border-slate-800/90 rounded-3xl p-10 sm:p-16 shadow-2xl space-y-6 transform transition-all duration-300"></div>
+        </div>
+
+        <div class="p-4 bg-slate-950/80 border-t border-slate-800 flex items-center justify-center gap-4">
+            <button onclick="prevSlide()" class="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl border border-slate-700 transition">
+                <i data-lucide="chevron-left" class="w-5 h-5"></i>
+            </button>
+            <span class="text-xs text-slate-400">クリックまたは矢印キー（← / →）でスライド切替</span>
+            <button onclick="nextSlide()" class="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl border border-slate-700 transition">
+                <i data-lucide="chevron-right" class="w-5 h-5"></i>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Google Drive Configuration
+        const CLIENT_ID = '919932654673-nklmiotkki9p0r7dmcucm5391n9n9diq.apps.googleusercontent.com';
+        const API_KEY = 'AIzaSyCkghiYEREKW5V7CeY21QFb4cLrdHcGuO4'; // ★ここにAPIキーを入力
+        const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
+        const SCOPES = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
+
+        let tokenClient;
+        let driveFileId = null;
+
+        // Data State
+        let state = {
+            tabs: [
+                { id: 'FORTNITE', name: 'フォートナイト' },
+                { id: 'VLOG', name: 'うつ病Vlog' },
+                { id: 'SOCCER', name: '鹿島アントラーズ' }
+            ],
+            activeTabId: 'FORTNITE',
+            notes: [],
+            selectedNoteId: null,
+            currentSlides: [],
+            currentSlideIndex: 0
+        };
+
+        const STATUS_MAP = {
+            'IDEA': { label: 'アイディア', badge: 'bg-slate-800 text-slate-300 border-slate-700' },
+            'OUTLINING': { label: '構成作成中', badge: 'bg-sky-950 text-sky-300 border-sky-800' },
+            'RECORDED': { label: '撮影完了', badge: 'bg-purple-950 text-purple-300 border-purple-800' },
+            'PUBLISHED': { label: '公開済み', badge: 'bg-emerald-950 text-emerald-300 border-emerald-800' }
+        };
+
+        window.onload = function() {
+            loadStorage();
+            renderTabs();
+            renderNoteList();
+            lucide.createIcons();
+
+            gapiLoaded();
+            gisLoaded();
+
+            document.addEventListener('keydown', function(e) {
+                const presModal = document.getElementById('presentationModal');
+                if (!presModal.classList.contains('hidden')) {
+                    if (e.key === 'ArrowRight' || e.key === 'Space') nextSlide();
+                    else if (e.key === 'ArrowLeft') prevSlide();
+                    else if (e.key === 'Escape') closePresentation();
+                }
+            });
+        };
+
+        // Storage Operations
+        function loadStorage() {
+            const saved = localStorage.getItem('ideaforge_slides_data');
+            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    state.tabs = parsed.tabs || state.tabs;
+                    state.notes = parsed.notes || [];
+                    state.activeTabId = state.tabs[0]?.id || 'FORTNITE';
+                } catch(e) { loadDefaults(); }
+            } else { loadDefaults(); }
+        }
+
+        function saveStorage() {
+            localStorage.setItem('ideaforge_slides_data', JSON.stringify({
+                tabs: state.tabs,
+                notes: state.notes
+            }));
+            if (driveFileId) {
+                syncToDrive();
+            }
+        }
+
+        function loadDefaults() {
+            state.notes = [
+                {
+                    id: 'n1',
+                    tabId: 'FORTNITE',
+                    title: '建築で壁を取られた時の立ち回り解説',
+                    status: 'OUTLINING',
+                    content: `<h1>1. 建築戦での壁奪取対策</h1><p>壁を取られた時にパニックにならないための基本戦略を動画で解説。</p><hr><h2>要点1: 無理に奪い返さない</h2><ul><li>即座に斜め後ろへリセット拡張</li><li>相手の「突進」を待つカウンター体制</li></ul><hr><h2>まとめ</h2><p>1マスのボックスに執着しない意識が勝率を高める！</p>`,
+                    updatedAt: Date.now()
+                },
+                {
+                    id: 'n2',
+                    tabId: 'VLOG',
+                    title: '波がある日の過ごし方と素直な語り',
+                    status: 'IDEA',
+                    content: `<h1>ノー編集Vlog要点</h1><p>今日の出来事と素直な心情をそのまま記録する。</p><hr><ul><li>1. 今日の体調とモチベーション</li><li>2. 出来なかったことに対して自分を責めない</li><li>3. 明日への小さな一歩</li></ul>`,
+                    updatedAt: Date.now() - 3600000
+                }
+            ];
+            saveStorage();
+        }
+
+        // Tab Rendering
+        function renderTabs() {
+            const container = document.getElementById('tabsContainer');
+            container.innerHTML = state.tabs.map(tab => {
+                const isActive = tab.id === state.activeTabId;
+                const noteCount = state.notes.filter(n => n.tabId === tab.id).length;
+                return `
+                    <div onclick="switchTab('${tab.id}')" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-t-lg border-t border-x cursor-pointer transition ${
+                        isActive 
+                        ? 'bg-slate-900 text-sky-400 border-slate-700 border-b-slate-900 -mb-px shadow-sm' 
+                        : 'bg-slate-950/60 text-slate-400 border-slate-800/80 hover:bg-slate-900 hover:text-slate-200'
+                    }">
+                        <i data-lucide="table" class="w-3.5 h-3.5 opacity-70"></i>
+                        <span>${escapeHtml(tab.name)}</span>
+                        <span class="text-[10px] px-1.5 py-0.2 rounded-full ${isActive ? 'bg-sky-500/20 text-sky-300' : 'bg-slate-800 text-slate-500'}">${noteCount}</span>
+                        ${state.tabs.length > 1 ? `
+                            <button onclick="deleteTab(event, '${tab.id}')" title="タブ削除" class="ml-1 text-slate-500 hover:text-red-400 rounded">
+                                <i data-lucide="x" class="w-3 h-3"></i>
+                            </button>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+            lucide.createIcons();
+        }
+
+        function switchTab(tabId) {
+            state.activeTabId = tabId;
+            state.selectedNoteId = null;
+            renderTabs();
+            renderNoteList();
+            document.getElementById('activeEditor').classList.add('hidden');
+            document.getElementById('emptyState').classList.remove('hidden');
+        }
+
+        function openAddTabModal() {
+            document.getElementById('newTabNameInput').value = '';
+            document.getElementById('addTabModal').classList.remove('hidden');
+        }
+
+        function closeAddTabModal() { document.getElementById('addTabModal').classList.add('hidden'); }
+
+        function addNewTab() {
+            const name = document.getElementById('newTabNameInput').value.trim();
+            if (!name) return;
+            const newTab = { id: 'tab_' + Date.now(), name: name };
+            state.tabs.push(newTab);
+            saveStorage();
+            closeAddTabModal();
+            switchTab(newTab.id);
+        }
+
+        function deleteTab(e, tabId) {
+            e.stopPropagation();
+            if (state.tabs.length <= 1) return;
+            state.tabs = state.tabs.filter(t => t.id !== tabId);
+            state.notes = state.notes.filter(n => n.tabId !== tabId);
+            if (state.activeTabId === tabId) state.activeTabId = state.tabs[0].id;
+            saveStorage();
+            renderTabs();
+            renderNoteList();
+        }
+
+        // Note List Rendering
+        function renderNoteList() {
+            const container = document.getElementById('noteList');
+            const searchStr = document.getElementById('searchInput').value.toLowerCase();
+            const statusFilter = document.getElementById('statusFilter').value;
+
+            const filtered = state.notes.filter(n => {
+                const matchTab = n.tabId === state.activeTabId;
+                const matchStatus = statusFilter === 'ALL' || n.status === statusFilter;
+                const matchSearch = n.title.toLowerCase().includes(searchStr) || (n.content && n.content.toLowerCase().includes(searchStr));
+                return matchTab && matchStatus && matchSearch;
+            });
+
+            filtered.sort((a, b) => b.updatedAt - a.updatedAt);
+
+            if (filtered.length === 0) {
+                container.innerHTML = `<div class="text-center py-10 px-4 text-slate-500 border border-dashed border-slate-800 rounded-xl"><p class="text-xs">ノートがありません</p></div>`;
+                return;
+            }
+
+            container.innerHTML = filtered.map(note => {
+                const status = STATUS_MAP[note.status] || STATUS_MAP.IDEA;
+                const isSelected = note.id === state.selectedNoteId;
+                const plainText = note.content ? note.content.replace(/<[^>]+>/g, ' ') : '';
+
+                return `
+                    <div onclick="selectNote('${note.id}')" class="p-3.5 rounded-xl border transition cursor-pointer ${
+                        isSelected 
+                        ? 'bg-slate-900 border-sky-500 shadow-md ring-1 ring-sky-500/50' 
+                        : 'bg-slate-950/40 border-slate-800 hover:border-slate-700 hover:bg-slate-900/60'
+                    }">
+                        <div class="flex items-center justify-between gap-2 mb-1">
+                            <h4 class="font-bold text-xs sm:text-sm text-slate-100 line-clamp-1">${escapeHtml(note.title || '無題のノート')}</h4>
+                            <span class="px-1.5 py-0.5 rounded text-[10px] border ${status.badge}">${status.label}</span>
+                        </div>
+                        <p class="text-[11px] text-slate-400 line-clamp-2 mb-2 leading-relaxed">${escapeHtml(plainText)}</p>
+                        <div class="text-[10px] text-slate-500 text-right">
+                            ${new Date(note.updatedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            lucide.createIcons();
+        }
+
+        function createNewNote() {
+            const newNote = {
+                id: 'note_' + Date.now(),
+                tabId: state.activeTabId,
+                title: '新しい動画テーマ',
+                status: 'IDEA',
+                content: `<h1>新しいテーマ</h1><p>ここに要点や語る順番、箇条書きを入力...</p>`,
+                updatedAt: Date.now()
+            };
+            state.notes.unshift(newNote);
+            saveStorage();
+            renderTabs();
+            selectNote(newNote.id);
+        }
+
+        function selectNote(noteId) {
+            state.selectedNoteId = noteId;
+            renderNoteList();
+
+            const note = state.notes.find(n => n.id === noteId);
+            if (!note) return;
+
+            document.getElementById('emptyState').classList.add('hidden');
+            const activeEditor = document.getElementById('activeEditor');
+            activeEditor.classList.remove('hidden');
+            activeEditor.classList.add('flex');
+
+            const tab = state.tabs.find(t => t.id === note.tabId);
+            document.getElementById('noteCategoryBadge').innerText = tab ? tab.name : '';
+            document.getElementById('detailStatusSelect').value = note.status;
+            document.getElementById('detailTitleInput').value = note.title;
+            document.getElementById('richEditor').innerHTML = note.content || '';
+
+            updateSlideCountBadge();
+        }
+
+        function formatDoc(cmd, value = null) {
+            document.execCommand(cmd, false, value);
+            saveCurrentNoteContent();
+        }
+
+        function insertSlideSeparator() {
+            document.execCommand('insertHorizontalRule', false, null);
+            saveCurrentNoteContent();
+        }
+
+        function saveCurrentNoteContent() {
+            if (!state.selectedNoteId) return;
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (note) {
+                note.content = document.getElementById('richEditor').innerHTML;
+                note.updatedAt = Date.now();
+                saveStorage();
+                updateSlideCountBadge();
+            }
+        }
+
+        function updateCurrentTitle(title) {
+            if (!state.selectedNoteId) return;
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (note) {
+                note.title = title;
+                note.updatedAt = Date.now();
+                saveStorage();
+                renderNoteList();
+            }
+        }
+
+        function updateCurrentStatus(status) {
+            if (!state.selectedNoteId) return;
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (note) {
+                note.status = status;
+                note.updatedAt = Date.now();
+                saveStorage();
+                renderNoteList();
+            }
+        }
+
+        function deleteCurrentNote() {
+            if (!state.selectedNoteId) return;
+            state.notes = state.notes.filter(n => n.id !== state.selectedNoteId);
+            state.selectedNoteId = null;
+            saveStorage();
+            renderTabs();
+            renderNoteList();
+            document.getElementById('activeEditor').classList.add('hidden');
+            document.getElementById('emptyState').classList.remove('hidden');
+        }
+
+        function updateSlideCountBadge() {
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (!note) return;
+            const slides = parseSlidesFromContent(note.content);
+            document.getElementById('slideCountBadge').innerText = `全 ${slides.length} スライド`;
+        }
+
+        function parseSlidesFromContent(htmlContent) {
+            if (!htmlContent || !htmlContent.trim()) return ['<p>スライド内容がありません</p>'];
+            let parts = htmlContent.split(/<hr[^>]*>/i);
+            parts = parts.map(p => p.trim()).filter(p => p.length > 0);
+            return parts.length > 0 ? parts : [htmlContent];
+        }
+
+        function startPresentation() {
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (!note) return;
+            const tab = state.tabs.find(t => t.id === note.tabId);
+            document.getElementById('presTabName').innerText = tab ? tab.name : '';
+            document.getElementById('presTitle').innerText = note.title;
+            state.currentSlides = parseSlidesFromContent(note.content);
+            state.currentSlideIndex = 0;
+            renderSlidePage();
+            document.getElementById('presentationModal').classList.remove('hidden');
+        }
+
+        function renderSlidePage() {
+            const content = state.currentSlides[state.currentSlideIndex] || '';
+            document.getElementById('slideContent').innerHTML = content;
+            document.getElementById('presPageIndicator').innerText = `${state.currentSlideIndex + 1} / ${state.currentSlides.length}`;
+        }
+
+        function nextSlide() {
+            if (state.currentSlideIndex < state.currentSlides.length - 1) {
+                state.currentSlideIndex++;
+                renderSlidePage();
+            }
+        }
+
+        function prevSlide() {
+            if (state.currentSlideIndex > 0) {
+                state.currentSlideIndex--;
+                renderSlidePage();
+            }
+        }
+
+        function closePresentation() {
+            document.getElementById('presentationModal').classList.add('hidden');
+        }
+
+        function exportData() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ tabs: state.tabs, notes: state.notes }, null, 2));
+            const downloadAnchor = document.createElement('a');
+            downloadAnchor.setAttribute("href", dataStr);
+            downloadAnchor.setAttribute("download", `ideaforge_backup_${new Date().toISOString().slice(0,10)}.json`);
+            document.body.appendChild(downloadAnchor);
+            downloadAnchor.click();
+            downloadAnchor.remove();
+        }
+
+        function importData(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const parsed = JSON.parse(e.target.result);
+                    if (parsed.tabs && parsed.notes) {
+                        state.tabs = parsed.tabs;
+                        state.notes = parsed.notes;
+                        state.activeTabId = state.tabs[0]?.id || 'FORTNITE';
+                        saveStorage();
+                        renderTabs();
+                        renderNoteList();
+                    }
+                } catch(err) { alert('ファイルのインポートに失敗しました。'); }
+            };
+            reader.readAsText(file);
+        }
+
+        function escapeHtml(str) {
+            return (str || '').replace(/[&<>"']/g, function(m) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m];
+            });
+        }
+
+        // ==========================================
+        // Google Drive API Integration
+        // ==========================================
+        function gapiLoaded() {
+            gapi.load('client', async () => {
+                await gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
+            });
+        }
+
+        function gisLoaded() {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: '',
+            });
+        }
+
+        function handleAuthClick() {
+            tokenClient.callback = async (resp) => {
+                if (resp.error !== undefined) throw resp;
+                document.getElementById('driveBtnText').innerText = '同期中...';
+                document.getElementById('syncStatusText').innerText = 'クラウド接続完了';
+                await loadDataFromDrive();
+            };
+            if (gapi.client.getToken() === null) {
+                tokenClient.requestAccessToken({prompt: 'consent'});
+            } else {
+                tokenClient.requestAccessToken({prompt: ''});
+            }
+        }
+
+        async function loadDataFromDrive() {
+            try {
+                const response = await gapi.client.drive.files.list({
+                    q: "name = 'ideaforge_slides_data.json' and trashed = false",
+                    fields: 'files(id, name)',
+                });
+                const files = response.result.files;
+                if (files && files.length > 0) {
+                    driveFileId = files[0].id;
+                    const fileContent = await gapi.client.drive.files.get({ fileId: driveFileId, alt: 'media' });
+                    if (fileContent.result) {
+                        const cloudData = fileContent.result;
+                        state.tabs = cloudData.tabs || state.tabs;
+                        state.notes = cloudData.notes || state.notes;
+                        localStorage.setItem('ideaforge_slides_data', JSON.stringify({ tabs: state.tabs, notes: state.notes }));
+                        renderTabs();
+                        renderNoteList();
+                        if (state.selectedNoteId) selectNote(state.selectedNoteId);
+                    }
+                } else {
+                    await saveNewFileToDrive();
+                }
+                document.getElementById('driveBtnText').innerText = 'Drive同期中';
+                document.getElementById('syncStatusText').innerText = '自動同期有効（Drive）';
+            } catch (err) {
+                console.error('Drive読み込みエラー:', err);
+            }
+        }
+
+        async function saveNewFileToDrive() {
+            const fileMetadata = { name: 'ideaforge_slides_data.json', mimeType: 'application/json' };
+            const response = await gapi.client.drive.files.create({ resource: fileMetadata, fields: 'id' });
+            driveFileId = response.result.id;
+            await syncToDrive();
+        }
+
+        async function syncToDrive() {
+            if (!driveFileId) return;
+            try {
+                await gapi.client.request({
+                    path: `/upload/drive/v3/files/${driveFileId}`,
+                    method: 'PATCH',
+                    params: { uploadType: 'media' },
+                    body: JSON.stringify({ tabs: state.tabs, notes: state.notes })
+                });
+                document.getElementById('syncStatusText').innerText = '保存完了 (' + new Date().toLocaleTimeString() + ')';
+            } catch (err) {
+                console.error('Drive同期エラー:', err);
+            }
+        }
+    </script>
 </body>
 </html>
