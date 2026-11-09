@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IdeaForge Studio & Slide Presenter (Drive Sync)</title>
+  <title>IdeaForge Studio & Slide Presenter</title>
   <!-- Google API / Identity Services -->
   <script src="https://apis.google.com/js/api.js" async defer></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -13,7 +13,6 @@
   <script src="https://cdn.quilljs.com/1.3.6/quill.min.js"></script>
   
   <style>
-    /* 既存スタイル＋Google同期UI調整 */
     :root {
       --bg-color: #0f172a;
       --card-bg: #1e293b;
@@ -35,8 +34,22 @@
       padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600;
     }
     .btn-drive { background: #10b981; }
-    .btn-drive.active { background: #059669; }
     .status-text { font-size: 12px; color: #94a3b8; margin-left: 10px; }
+
+    /* Tabs & Content UI */
+    .tab-bar { display: flex; gap: 4px; background: #0f172a; padding: 8px 16px 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+    .tab { padding: 8px 16px; background: #1e293b; color: #94a3b8; border-radius: 6px 6px 0 0; cursor: pointer; border: 1px solid var(--border); border-bottom: none; }
+    .tab.active { background: #3b82f6; color: #fff; font-weight: bold; }
+    .container { padding: 20px; max-width: 1200px; margin: 0 auto; }
+    .editor-card { background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); padding: 16px; margin-top: 15px; }
+    .ql-toolbar { background: #f8fafc; border-radius: 4px 4px 0 0; }
+    .ql-container { background: #fff; color: #000; border-radius: 0 0 4px 4px; height: 300px; font-size: 16px; }
+    
+    /* Fullscreen Slide Modal */
+    .slide-modal { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-content: 1000; flex-direction: column; justify-content: center; align-items: center; padding: 40px; box-sizing: border-box; }
+    .slide-modal.active { display: flex; }
+    .slide-content { color: #fff; font-size: 32px; text-align: center; max-width: 90%; }
+    .close-slide { position: absolute; top: 20px; right: 20px; background: #ef4444; }
   </style>
 </head>
 <body>
@@ -44,32 +57,150 @@
 <div class="header-bar">
   <h2 style="margin:0; font-size:18px;">IdeaForge Studio</h2>
   <div>
+    <button id="slide-btn" class="btn" style="background:#8b5cf6;" onclick="openSlide()">スライド表示</button>
     <button id="drive-auth-btn" class="btn btn-drive" onclick="handleAuthClick()">Googleドライブと同期</button>
     <span id="sync-status" class="status-text">未同期（ローカル保存中）</span>
   </div>
 </div>
 
+<div class="tab-bar" id="tab-container"></div>
+
+<div class="container">
+  <div style="display:flex; gap:10px; margin-bottom:10px;">
+    <button class="btn" onclick="addTab()">+ タブ追加</button>
+    <button class="btn" style="background:#ef4444;" onclick="deleteCurrentTab()">タブ削除</button>
+  </div>
+  <div class="editor-card">
+    <input type="text" id="tab-title-input" style="width:100%; font-size:18px; padding:8px; margin-bottom:10px; box-sizing:border-box; background:#0f172a; color:#fff; border:1px solid var(--border); border-radius:4px;" placeholder="テーマ名（例: フォートナイト）" oninput="updateTabTitle()">
+    <div id="editor"></div>
+  </div>
+</div>
+
+<!-- スライド全画面モーダル -->
+<div id="slide-modal" class="slide-modal">
+  <button class="btn close-slide" onclick="closeSlide()">閉じる (ESC)</button>
+  <div id="slide-content" class="slide-content"></div>
+</div>
+
 <script>
-  // ==========================================
-  // 1. Google Drive API 設定情報
-  // ==========================================
+  // Google API 設定
   const CLIENT_ID = '919932654673-nklmiotkki9p0r7dmcucm5391n9n9diq.apps.googleusercontent.com';
-  const API_KEY = 'AIzaSyCkghiYEREKW5V7CeY21QFb4cLrdHcGuO4';
+  const API_KEY = 'AIzaSyCkghiYEREKW5V7CeY21QFb4cLrdHcGuO4'; // ここにご自身のAPIキーを入れてください
   const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
   const SCOPES = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
 
   let tokenClient;
-  let gapiInited = false;
-  let gsisInited = false;
   let driveFileId = null;
 
+  // アプリデータ構造
+  let appData = JSON.parse(localStorage.getItem('ideaforge_app_data')) || {
+    activeIndex: 0,
+    tabs: [
+      { title: 'フォートナイト', content: '<h2>要点メモ</h2><ul><li>ネタ1...</li></ul>' },
+      { title: 'うつ病Vlog', content: '<h2>話すテーマ</h2><ul><li>今日の振り返り...</li></ul>' }
+    ]
+  };
+
+  let quill;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    quill = new Quill('#editor', {
+      theme: 'snow',
+      modules: {
+        toolbar: [
+          [{ 'header': [1, 2, 3, false] }],
+          ['bold', 'italic', 'underline', 'strike'],
+          [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+          [{ 'color': [] }, { 'background': [] }],
+          ['clean']
+        ]
+      }
+    });
+
+    quill.on('text-change', () => {
+      appData.tabs[appData.activeIndex].content = quill.root.innerHTML;
+      saveLocalAndSync();
+    });
+
+    renderTabs();
+    loadActiveTab();
+  });
+
+  function renderTabs() {
+    const container = document.getElementById('tab-container');
+    container.innerHTML = '';
+    appData.tabs.forEach((tab, index) => {
+      const div = document.createElement('div');
+      div.className = `tab ${index === appData.activeIndex ? 'active' : ''}`;
+      div.innerText = tab.title || `タブ ${index + 1}`;
+      div.onclick = () => switchTab(index);
+      container.appendChild(div);
+    });
+  }
+
+  function loadActiveTab() {
+    const current = appData.tabs[appData.activeIndex];
+    document.getElementById('tab-title-input').value = current.title;
+    quill.root.innerHTML = current.content || '';
+  }
+
+  function switchTab(index) {
+    appData.activeIndex = index;
+    renderTabs();
+    loadActiveTab();
+    saveLocalAndSync();
+  }
+
+  function addTab() {
+    appData.tabs.push({ title: '新規テーマ', content: '' });
+    appData.activeIndex = appData.tabs.length - 1;
+    renderTabs();
+    loadActiveTab();
+    saveLocalAndSync();
+  }
+
+  function deleteCurrentTab() {
+    if (appData.tabs.length <= 1) return alert('最後の1つのタブは削除できません。');
+    if (!confirm('現在のタブを削除しますか？')) return;
+    appData.tabs.splice(appData.activeIndex, 1);
+    appData.activeIndex = Math.max(0, appData.activeIndex - 1);
+    renderTabs();
+    loadActiveTab();
+    saveLocalAndSync();
+  }
+
+  function updateTabTitle() {
+    const title = document.getElementById('tab-title-input').value;
+    appData.tabs[appData.activeIndex].title = title;
+    renderTabs();
+    saveLocalAndSync();
+  }
+
+  function saveLocalAndSync() {
+    localStorage.setItem('ideaforge_app_data', JSON.stringify(appData));
+    if (driveFileId) {
+      syncToDrive();
+    }
+  }
+
+  // スライド機能
+  function openSlide() {
+    const modal = document.getElementById('slide-modal');
+    const content = document.getElementById('slide-content');
+    content.innerHTML = quill.root.innerHTML;
+    modal.classList.add('active');
+  }
+  function closeSlide() {
+    document.getElementById('slide-modal').classList.remove('active');
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSlide();
+  });
+
+  // Google Drive API 連携
   function gapiLoaded() {
     gapi.load('client', async () => {
-      await gapi.client.init({
-        apiKey: API_KEY,
-        discoveryDocs: [DISCOVERY_DOC],
-      });
-      gapiInited = true;
+      await gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
     });
   }
 
@@ -77,27 +208,19 @@
     tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPES,
-      callback: '', // 後で設定
+      callback: '',
     });
-    gsisInited = true;
   }
 
-  window.onload = () => {
-    gapiLoaded();
-    gisLoaded();
-  };
+  window.onload = () => { gapiLoaded(); gisLoaded(); };
 
-  // 認証と初回データ読み込み
   function handleAuthClick() {
     tokenClient.callback = async (resp) => {
-      if (resp.error !== undefined) {
-        throw (resp);
-      }
+      if (resp.error !== undefined) throw resp;
       document.getElementById('drive-auth-btn').innerText = '同期中...';
       document.getElementById('sync-status').innerText = 'クラウド接続完了';
       await loadDataFromDrive();
     };
-
     if (gapi.client.getToken() === null) {
       tokenClient.requestAccessToken({prompt: 'consent'});
     } else {
@@ -105,7 +228,6 @@
     }
   }
 
-  // クラウドから最新データ（JSON）を取得
   async function loadDataFromDrive() {
     try {
       const response = await gapi.client.drive.files.list({
@@ -115,27 +237,31 @@
       const files = response.result.files;
       if (files && files.length > 0) {
         driveFileId = files[0].id;
-        const fileContent = await gapi.client.drive.files.get({
-          fileId: driveFileId,
-          alt: 'media',
-        });
-        // 取得したデータをアプリに反映
+        const fileContent = await gapi.client.drive.files.get({ fileId: driveFileId, alt: 'media' });
         if (fileContent.result) {
-          localStorage.setItem('ideaforge_app_data', JSON.stringify(fileContent.result));
-          location.reload(); // アプリの状態を再読み込み
+          appData = fileContent.result;
+          localStorage.setItem('ideaforge_app_data', JSON.stringify(appData));
+          renderTabs();
+          loadActiveTab();
         }
       } else {
-        // 新規作成
         await saveNewFileToDrive();
       }
+      document.getElementById('drive-auth-btn').innerText = 'Drive同期中';
       document.getElementById('sync-status').innerText = '自動同期有効（Drive）';
     } catch (err) {
       console.error('Drive読み込みエラー:', err);
     }
   }
 
-  // アプリ側で保存が起きるたびにドライブへ自動送信する関数
-  async function syncToDrive(appData) {
+  async function saveNewFileToDrive() {
+    const fileMetadata = { name: 'ideaforge_data.json', mimeType: 'application/json' };
+    const response = await gapi.client.drive.files.create({ resource: fileMetadata, fields: 'id' });
+    driveFileId = response.result.id;
+    await syncToDrive();
+  }
+
+  async function syncToDrive() {
     if (!driveFileId) return;
     try {
       await gapi.client.request({
