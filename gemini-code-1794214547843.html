@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IdeaForge Studio & Slide Presenter (Drive Sync)</title>
+  <!-- Google API / Identity Services -->
+  <script src="https://apis.google.com/js/api.js" async defer></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  
+  <!-- Quill.js (Rich Text Editor) -->
+  <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+  <script src="https://cdn.quilljs.com/1.3.6/quill.min.js"></script>
+  
+  <style>
+    /* 既存スタイル＋Google同期UI調整 */
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --accent: #3b82f6;
+      --text: #f8fafc;
+      --border: #334155;
+    }
+    body {
+      margin: 0; padding: 0;
+      background: var(--bg-color); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .header-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 20px; background: #020617; border-bottom: 1px solid var(--border);
+    }
+    .btn {
+      background: var(--accent); color: #fff; border: none;
+      padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600;
+    }
+    .btn-drive { background: #10b981; }
+    .btn-drive.active { background: #059669; }
+    .status-text { font-size: 12px; color: #94a3b8; margin-left: 10px; }
+  </style>
+</head>
+<body>
+
+<div class="header-bar">
+  <h2 style="margin:0; font-size:18px;">IdeaForge Studio</h2>
+  <div>
+    <button id="drive-auth-btn" class="btn btn-drive" onclick="handleAuthClick()">Googleドライブと同期</button>
+    <span id="sync-status" class="status-text">未同期（ローカル保存中）</span>
+  </div>
+</div>
+
+<script>
+  // ==========================================
+  // 1. Google Drive API 設定情報
+  // ==========================================
+  const CLIENT_ID = 'ここに取得したOAuthクライアントIDを入力';
+  const API_KEY = 'ここに取得したAPIキーを入力';
+  const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
+  const SCOPES = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
+
+  let tokenClient;
+  let gapiInited = false;
+  let gsisInited = false;
+  let driveFileId = null;
+
+  function gapiLoaded() {
+    gapi.load('client', async () => {
+      await gapi.client.init({
+        apiKey: API_KEY,
+        discoveryDocs: [DISCOVERY_DOC],
+      });
+      gapiInited = true;
+    });
+  }
+
+  function gisLoaded() {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      callback: '', // 後で設定
+    });
+    gsisInited = true;
+  }
+
+  window.onload = () => {
+    gapiLoaded();
+    gisLoaded();
+  };
+
+  // 認証と初回データ読み込み
+  function handleAuthClick() {
+    tokenClient.callback = async (resp) => {
+      if (resp.error !== undefined) {
+        throw (resp);
+      }
+      document.getElementById('drive-auth-btn').innerText = '同期中...';
+      document.getElementById('sync-status').innerText = 'クラウド接続完了';
+      await loadDataFromDrive();
+    };
+
+    if (gapi.client.getToken() === null) {
+      tokenClient.requestAccessToken({prompt: 'consent'});
+    } else {
+      tokenClient.requestAccessToken({prompt: ''});
+    }
+  }
+
+  // クラウドから最新データ（JSON）を取得
+  async function loadDataFromDrive() {
+    try {
+      const response = await gapi.client.drive.files.list({
+        q: "name = 'ideaforge_data.json' and trashed = false",
+        fields: 'files(id, name)',
+      });
+      const files = response.result.files;
+      if (files && files.length > 0) {
+        driveFileId = files[0].id;
+        const fileContent = await gapi.client.drive.files.get({
+          fileId: driveFileId,
+          alt: 'media',
+        });
+        // 取得したデータをアプリに反映
+        if (fileContent.result) {
+          localStorage.setItem('ideaforge_app_data', JSON.stringify(fileContent.result));
+          location.reload(); // アプリの状態を再読み込み
+        }
+      } else {
+        // 新規作成
+        await saveNewFileToDrive();
+      }
+      document.getElementById('sync-status').innerText = '自動同期有効（Drive）';
+    } catch (err) {
+      console.error('Drive読み込みエラー:', err);
+    }
+  }
+
+  // アプリ側で保存が起きるたびにドライブへ自動送信する関数
+  async function syncToDrive(appData) {
+    if (!driveFileId) return;
+    try {
+      await gapi.client.request({
+        path: `/upload/drive/v3/files/${driveFileId}`,
+        method: 'PATCH',
+        params: { uploadType: 'media' },
+        body: JSON.stringify(appData)
+      });
+      document.getElementById('sync-status').innerText = '保存完了 (' + new Date().toLocaleTimeString() + ')';
+    } catch (err) {
+      console.error('Drive同期エラー:', err);
+    }
+  }
+</script>
+
+</body>
+</html>
